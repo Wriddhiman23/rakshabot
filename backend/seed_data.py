@@ -1,14 +1,41 @@
+import sys
+import os
 import json
 import datetime
+
+# Ensure backend dir is on path
+backend_dir = os.path.dirname(os.path.abspath(__file__))
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
+
 from sqlalchemy.orm import Session
+from database import engine, SessionLocal, init_db
 from models import Unit, Mission, Victim, HazardZone, MissionLog, CommsMessage
 
-def seed_database(db: Session):
-    # Check if database is already seeded
-    if db.query(Unit).first():
+def clear_database(db: Session):
+    """Clears all records for clean re-seeding"""
+    db.query(CommsMessage).delete()
+    db.query(MissionLog).delete()
+    db.query(Mission).delete()
+    db.query(Victim).delete()
+    db.query(HazardZone).delete()
+    db.query(Unit).delete()
+    db.commit()
+
+def seed_database(db: Session, force: bool = False):
+    """Loads current demo data into the database"""
+    init_db()
+
+    existing_units = db.query(Unit).count()
+    if existing_units > 0 and not force:
+        print(f"Database already contains {existing_units} units and demo records. (Pass force=True to wipe and re-seed)")
         return
 
-    print("Seeding initial RakshaBot operational data...")
+    if force and existing_units > 0:
+        print("Resetting database records...")
+        clear_database(db)
+
+    print("Seeding initial RakshaBot operational demo data...")
 
     # Base Camp reference: Lat 9.9850, Lng 76.2950 (NDRF Base 04, Kochi Periyar Sector)
     units_data = [
@@ -137,6 +164,7 @@ def seed_database(db: Session):
     for unit in units_data:
         db.add(unit)
     db.commit()
+    print("  -> Units added: Garuda-01, Garuda-02, Netra-01, Netra-02, Ashwa-01, Varun-01")
 
     # Seed initial victims
     now = datetime.datetime.utcnow()
@@ -206,6 +234,7 @@ def seed_database(db: Session):
     for victim in victims_data:
         db.add(victim)
     db.commit()
+    print("  -> Victims added: VIC-101, VIC-102, VIC-103, VIC-104")
 
     # Seed Hazard Zones
     flood_coords = [
@@ -257,6 +286,7 @@ def seed_database(db: Session):
     for hz in hazard_zones:
         db.add(hz)
     db.commit()
+    print("  -> Hazard zones added: Periyar Flood Zone, Kalamassery Collapse, Vallarpadam Power Corridor")
 
     # Seed Past Completed Missions for rich analytics
     garuda_01 = db.query(Unit).filter_by(callsign="Garuda-01").first()
@@ -341,6 +371,7 @@ def seed_database(db: Session):
     for m in completed_missions:
         db.add(m)
     db.commit()
+    print("  -> Completed historical missions added: 4 records")
 
     # Seed initial Mission Logs
     logs_data = [
@@ -384,6 +415,7 @@ def seed_database(db: Session):
     for log in logs_data:
         db.add(log)
     db.commit()
+    print("  -> Initial mission logs added: 5 records")
 
     # Seed Comms Messages
     comms_data = [
@@ -428,5 +460,11 @@ def seed_database(db: Session):
     for comm in comms_data:
         db.add(comm)
     db.commit()
+    print("  -> Comms intercom records added: 4 messages")
 
     print("RakshaBot seed data populated successfully.")
+
+if __name__ == "__main__":
+    force_seed = "--reset" in sys.argv or "--force" in sys.argv
+    with SessionLocal() as session:
+        seed_database(session, force=force_seed)

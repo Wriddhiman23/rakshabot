@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from database import engine, Base, get_db, SessionLocal
+from database import engine, Base, get_db, SessionLocal, init_db
 from models import Unit, Mission, Victim, HazardZone, MissionLog, CommsMessage
 from schemas import (
     UnitResponse, MissionResponse, VictimResponse, HazardZoneResponse,
@@ -22,14 +22,15 @@ from websocket import manager
 from simulator import simulator, calculate_distance_meters
 from seed_data import seed_database
 
-# Create database tables and seed
-Base.metadata.create_all(bind=engine)
+# Initialize database schema and load seed data if empty
+init_db()
 with SessionLocal() as db_session:
     seed_database(db_session)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Start simulator
+    # Startup: initialize in-memory unit telemetry and start simulation loop
+    simulator.init_units()
     await simulator.start()
     yield
     # Shutdown
@@ -42,7 +43,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware for development
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -64,21 +65,21 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception:
         manager.disconnect(websocket)
 
-# ----------------- UNITS ENDPOINTS -----------------
+# ----------------- UNITS ENDPOINTS (Live In-Memory Telemetry) -----------------
 @app.get("/api/units", response_model=List[UnitResponse])
-def get_units(db: Session = Depends(get_db)):
-    return db.query(Unit).all()
+def get_units():
+    return [UnitResponse.model_validate(u) for u in simulator.get_units()]
 
 @app.get("/api/units/{unit_id}", response_model=UnitResponse)
-def get_unit(unit_id: int, db: Session = Depends(get_db)):
-    unit = db.query(Unit).filter_by(id=unit_id).first()
+def get_unit(unit_id: int):
+    unit = simulator.get_unit(unit_id)
     if not unit:
         raise HTTPException(status_code=404, detail="Unit not found")
-    return unit
+    return UnitResponse.model_validate(unit)
 
 @app.post("/api/units/{unit_id}/override")
 async def override_unit(unit_id: int, req: OverrideCommandRequest, db: Session = Depends(get_db)):
-    unit = db.query(Unit).filter_by(id=unit_id).first()
+    unit = simulator.get_unit(unit_id)
     if not unit:
         raise HTTPException(status_code=404, detail="Unit not found")
 
@@ -159,13 +160,9 @@ def get_missions(status: Optional[str] = None, db: Session = Depends(get_db)):
 
 @app.post("/api/missions/dispatch", response_model=MissionResponse)
 async def dispatch_mission(req: MissionDispatchRequest, db: Session = Depends(get_db)):
-    unit = db.query(Unit).filter_by(id=req.unit_id).first()
+    unit = simulator.get_unit(req.unit_id)
     if not unit:
         raise HTTPException(status_code=404, detail="Selected unit does not exist")
-
-    if unit.status not in ["IDLE", "HOLDING", "RETURNING"]:
-        # Warn or allow reassignment
-        pass
 
     mission_number = f"MSN-{datetime.datetime.utcnow().strftime('%Y%m%d')}-{int(datetime.datetime.utcnow().timestamp()) % 1000:03d}"
     title = req.title or f"Emergency Dispatch - {req.incident_type.capitalize()} at {req.target_landmark}"
@@ -189,14 +186,27 @@ async def dispatch_mission(req: MissionDispatchRequest, db: Session = Depends(ge
     db.commit()
     db.refresh(mission)
 
-    # Update unit status
+    # Update in-memory unit
     unit.status = "EN_ROUTE"
     unit.current_mission_id = mission.id
     unit.current_payload = req.payload_item
     unit.payload_status = "IN_TRANSIT"
     unit.detection_label = f"En-route to {req.target_landmark}"
 
-    # If associated with victim, update victim status
+    # Register in active missions cache
+    simulator.active_missions[mission.id] = {
+        "id": mission.id,
+        "mission_number": mission.mission_number,
+        "target_lat": mission.target_lat,
+        "target_lng": mission.target_lng,
+        "target_landmark": mission.target_landmark,
+        "payload_item": mission.payload_item,
+        "victim_id": mission.victim_id,
+        "dispatched_at": mission.dispatched_at,
+        "status": mission.status
+    }
+
+    # If associated with victim, update victim status in Neon
     if req.victim_id:
         victim = db.query(Victim).filter_by(id=req.victim_id).first()
         if victim:
@@ -237,10 +247,9 @@ PAYLOAD_MAP = {
 def suggest_nearest(
     lat: float = Query(...),
     lng: float = Query(...),
-    incident_type: str = Query("cardiac"),
-    db: Session = Depends(get_db)
+    incident_type: str = Query("cardiac")
 ):
-    units = db.query(Unit).all()
+    units = simulator.get_units()
     suggestions = []
     recommended_payload = PAYLOAD_MAP.get(incident_type.lower(), "Standard Emergency First Aid")
 
@@ -249,7 +258,6 @@ def suggest_nearest(
         speed = 24.0 if u.unit_type == "drone" else 7.0
         eta_sec = int(dist_m / max(1.0, speed))
 
-        # Suitability score calculation
         availability_bonus = 30.0 if u.status == "IDLE" else (10.0 if u.status == "RETURNING" else 0.0)
         battery_penalty = max(0.0, (100.0 - u.battery) * 0.3)
         dist_penalty = (dist_m / 1000.0) * 8.0
@@ -273,7 +281,6 @@ def suggest_nearest(
 
 @app.post("/api/emergency/report")
 async def report_emergency(req: EmergencyReportRequest, db: Session = Depends(get_db)):
-    # Create new victim / incident entry
     code_num = db.query(Victim).count() + 105
     v_code = f"VIC-{code_num}"
     condition_desc = f"{req.incident_type.capitalize()} alert reported ({req.affected_count} persons affected). {req.description or ''}"
@@ -395,6 +402,9 @@ def get_analytics(db: Session = Depends(get_db)):
     victims = db.query(Victim).all()
     avg_conf = round(sum(v.confidence_score for v in victims) / len(victims), 1) if victims else 93.2
 
+    # Active units from in-memory store
+    active_units = len([u for u in simulator.get_units() if u.status != "OFFLINE"])
+
     return {
         "total_missions": len(all_missions),
         "completed_missions": len(completed_missions),
@@ -404,7 +414,7 @@ def get_analytics(db: Session = Depends(get_db)):
         "ai_detection_accuracy_pct": avg_conf,
         "missions_by_type": type_distribution,
         "avg_response_by_type": avg_by_type,
-        "active_units_count": db.query(Unit).filter(Unit.status != "OFFLINE").count(),
+        "active_units_count": active_units,
         "total_victims_tracked": len(victims),
         "rescued_count": len([v for v in victims if v.status in ["RESCUED", "EVACUATED", "FIRST_AID_DROPPED"]])
     }
@@ -415,7 +425,6 @@ def export_csv(db: Session = Depends(get_db)):
     output = io.StringIO()
     writer = csv.writer(output)
 
-    # Header
     writer.writerow([
         "Mission Number", "Title", "Incident Type", "Priority", "Status",
         "Assigned Unit ID", "Target Landmark", "Target Latitude", "Target Longitude",
