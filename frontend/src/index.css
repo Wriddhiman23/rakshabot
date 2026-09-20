@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #0a0d14;
+    color: #f1f5f9;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    overflow-x: hidden;
+  }
+}
+
+/* Tactical custom scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(10, 13, 20, 0.8);
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Leaflet Tactical Customizations */
+.leaflet-container {
+  background-color: #07090e !important;
+  font-family: inherit;
+  outline: none;
+}
+
+/* Dark ops-centre tactical basemap via tile-pane inversion */
+.leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9) saturate(0.6);
+}
+
+/* Ensure markers, vector hazard zones, and popups maintain true original colours */
+.leaflet-marker-pane,
+.leaflet-overlay-pane,
+.leaflet-shadow-pane,
+.leaflet-popup-pane,
+.leaflet-tooltip-pane {
+  filter: none !important;
+}
+
+.tactical-tooltip {
+  background-color: rgba(15, 23, 42, 0.95) !important;
+  border: 1px solid rgba(6, 182, 212, 0.6) !important;
+  color: #e2e8f0 !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.8) !important;
+  border-radius: 6px !important;
+  padding: 4px 8px !important;
+  font-family: 'JetBrains Mono', monospace !important;
+}
+
+.tactical-tooltip::before {
+  border-top-color: rgba(6, 182, 212, 0.6) !important;
+}
+
+/* Pulse radar ring animations */
+@keyframes radarPing {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+.radar-ring {
+  animation: radarPing 2.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
